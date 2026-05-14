@@ -781,11 +781,19 @@ def index():
             flex-shrink: 0;
         }
 
-        .sku-count {
-            font-size: 12px;
-            color: var(--primary-start);
-            font-weight: 500;
-            flex-shrink: 0;
+        .sku-status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            flex-shrink: 0; margin-left: auto;
+        }
+        .sku-status-dot.done { background: var(--success); }
+        .sku-status-dot.todo { background: var(--error); }
+        .sku-img-badge {
+            font-size: 11px; padding: 2px 7px; border-radius: 8px;
+            font-weight: 500; flex-shrink: 0; margin-left: 6px;
+            background: rgba(52,199,89,0.12); color: var(--success);
+        }
+        .sku-img-badge.empty {
+            background: rgba(255,59,48,0.10); color: var(--error);
         }
 
         /* 颜色标签 - 横向滚动 */
@@ -833,6 +841,18 @@ def index():
             justify-content: center;
             cursor: pointer;
         }
+
+        /* 颜色标签图片计数 */
+        .color-tab-badge {
+            font-size: 10px; padding: 1px 5px; border-radius: 6px;
+            margin-left: 4px; font-weight: 600;
+            background: rgba(255,255,255,0.3); color: white;
+            vertical-align: middle;
+        }
+        .color-tab:not(.selected) .color-tab-badge {
+            background: rgba(0,0,0,0.06); color: var(--text-secondary);
+        }
+        .color-tab-badge.empty { opacity: 0.5; }
 
         /* 颜色追加行 */
         .add-color-row {
@@ -1272,7 +1292,7 @@ def index():
         <div class="delete-sheet-title" id="delete-sheet-title">删除 SKU</div>
         <div class="delete-sheet-desc" id="delete-sheet-desc">此操作不可恢复</div>
         <div class="delete-sheet-btns">
-            <button class="delete-sheet-btn" id="delete-confirm-btn" onclick="doDelete()">删除</button>
+            <button class="delete-sheet-btn" id="delete-confirm-btn" onclick="handleDeleteConfirm()">删除</button>
             <button class="delete-sheet-btn cancel" onclick="hideDeleteSheet()">取消</button>
         </div>
     </div>
@@ -1371,9 +1391,28 @@ def index():
             var clearBtn = document.getElementById('search-clear');
             clearBtn.className = 'search-clear' + (keyword ? ' show' : '');
             var items = document.querySelectorAll('#sku-list .sku-item');
+            var visible = 0;
             for (var i = 0; i < items.length; i++) {
                 var text = items[i].textContent.toLowerCase();
-                items[i].style.display = text.indexOf(keyword) >= 0 ? '' : 'none';
+                var show = keyword === '' || text.indexOf(keyword) >= 0;
+                items[i].parentElement.style.display = show ? '' : 'none';
+                if (show) visible++;
+            }
+            // 更新计数
+            document.getElementById('sku-count').textContent = (keyword ? visible + '/' : '') + skus.length + ' 个SKU';
+            // 搜索无结果提示
+            var list = document.getElementById('sku-list');
+            var emptyEl = document.getElementById('search-empty');
+            if (visible === 0 && keyword) {
+                if (!emptyEl) {
+                    var div = document.createElement('div');
+                    div.id = 'search-empty';
+                    div.className = 'empty-state';
+                    div.innerHTML = '<div class="icon">🔍</div><div class="text">未找到匹配的货号</div>';
+                    list.appendChild(div);
+                }
+            } else if (emptyEl) {
+                emptyEl.remove();
             }
         }
 
@@ -1396,7 +1435,13 @@ def index():
                 var colors = parseColors(sku['颜色'] || '');
                 var colorText = colors.length > 2 ? (colors[0] + '/' + colors[1] + '/...') : (sku['颜色'] || '无颜色');
                 var source = sku['_source'] === 'local' ? '<span style="color:#FF9500;font-size:11px;margin-left:4px;">手动</span>' : '';
-                var imgCount = sku['_image_count'] ? '<span style="color:#34C759;font-size:12px;">' + sku['_image_count'] + '张</span>' : '';
+                var imgCount = sku['_image_count'] || 0;
+                var statusDot = imgCount > 0
+                    ? '<span class="sku-status-dot done"></span>'
+                    : '<span class="sku-status-dot todo"></span>';
+                var imgBadge = imgCount > 0
+                    ? '<span class="sku-img-badge">' + imgCount + '张</span>'
+                    : '<span class="sku-img-badge empty">待拍</span>';
                 var updateTime = sku['_updated_at'] ? '<span class="sku-time">' + formatTime(sku['_updated_at']) + '</span>' : '';
 
                 return '<div class="sku-swipe-wrap" data-index="' + i + '">' +
@@ -1407,8 +1452,8 @@ def index():
                     '<div class="sku-no">' + sku['货号'] + source + '</div>' +
                     '<div class="sku-meta">' + colorText + updateTime + '</div>' +
                     '</div>' +
-                    imgCount +
-                    '<span class="sku-count" id="sku-count-' + sku['货号'] + '"></span>' +
+                    statusDot +
+                    imgBadge +
                     '<span class="sku-arrow">›</span>' +
                     '</div></div>';
             }).join('');
@@ -1469,8 +1514,17 @@ def index():
                 return;
             }
 
+            // 统计每个颜色的图片数
+            var colorCounts = {};
+            for (var i = 0; i < allExistingImages.length; i++) {
+                var c = allExistingImages[i]._color || '';
+                colorCounts[c] = (colorCounts[c] || 0) + 1;
+            }
+
             var html = colors.map(function(c) {
-                return '<button class="color-tab ' + (selectedColor === c ? 'selected' : '') + '" onclick="selectColor(&apos;' + c + '&apos;)">' + c + '</button>';
+                var cnt = colorCounts[c] || 0;
+                var badge = cnt > 0 ? '<span class="color-tab-badge">' + cnt + '</span>' : '<span class="color-tab-badge empty">0</span>';
+                return '<button class="color-tab ' + (selectedColor === c ? 'selected' : '') + '" onclick="selectColor(&apos;' + c + '&apos;)">' + c + badge + '</button>';
             }).join('');
             html += '<button class="color-tab-add" onclick="toggleAddColor()">+</button>';
             tabs.innerHTML = html;
@@ -1584,7 +1638,9 @@ def index():
             }
 
             if (filtered.length === 0) {
-                section.style.display = 'none';
+                section.style.display = 'block';
+                countEl.textContent = '0 张';
+                grid.innerHTML = '<div class="empty-state" style="padding:24px 0;"><div class="icon">📷</div><div class="text">该颜色暂无图片，点击上方按钮上传</div></div>';
                 return;
             }
 
@@ -1719,18 +1775,25 @@ def index():
             var btn = document.getElementById('upload-btn');
             var total = selectedFiles.length;
             var uploaded = 0;
+            var compressed = 0;
             var btnOriginal = btn.innerHTML;
             btn.disabled = true;
 
-            // 阶段1: 并行压缩所有图片
-            btn.innerHTML = '压缩中 0/' + total;
-            var compressTasks = selectedFiles.map(function(f) {
-                return function() { return compressImage(f); };
+            // 阶段1: 并行压缩所有图片（带进度）
+            btn.innerHTML = '压缩 0/' + total;
+            var compressTasks = selectedFiles.map(function(f, idx) {
+                return function() {
+                    return compressImage(f).then(function(result) {
+                        compressed++;
+                        btn.innerHTML = '压缩 ' + compressed + '/' + total;
+                        return result;
+                    });
+                };
             });
 
-            parallelRun(compressTasks, 5).then(function(compressed) {
+            parallelRun(compressTasks, 5).then(function(compressedFiles) {
                 // 阶段2: 并行上传（最多3个并发）
-                var uploadTasks = compressed.map(function(f, idx) {
+                var uploadTasks = compressedFiles.map(function(f, idx) {
                     return function() {
                         return uploadOne(f, selectedSku['货号'], selectedColor, function(loaded, t) {
                             var pct = Math.round(loaded / t * 100);
@@ -1795,9 +1858,16 @@ def index():
         var pendingDeleteIndex = -1;
         var deletedSkuData = null;
         var undoTimer = null;
+        var deleteMode = 'sku'; // 'sku' or 'batch'
+
+        function handleDeleteConfirm() {
+            if (deleteMode === 'batch') doConfirmBatchDelete();
+            else doDelete();
+        }
 
         function confirmDelete(index, e) {
             e.stopPropagation();
+            deleteMode = 'sku';
             pendingDeleteIndex = index;
             var sku = skus[index];
             document.getElementById('delete-sheet-title').textContent = '删除 ' + sku['货号'] + '?';
@@ -1830,6 +1900,11 @@ def index():
                 .then(function(d) {
                     if (d.success) {
                         showToastWithUndo('已删除 ' + skuNo);
+                        selectedSku = null;
+                        selectedColor = null;
+                        document.getElementById('color-section').style.display = 'none';
+                        document.getElementById('upload-section').style.display = 'none';
+                        document.getElementById('existing-section').style.display = 'none';
                         loadDrafts();
                     } else {
                         showToast(d.message || '删除失败', 'error');
@@ -2124,10 +2199,26 @@ def index():
             }
         }
 
+        var pendingBatchNames = [];
         function doBatchDelete() {
             var names = Object.keys(batchSelected);
             if (names.length === 0 || !selectedSku) return;
-            if (!confirm('确定删除 ' + names.length + ' 张图片？')) return;
+            deleteMode = 'batch';
+            pendingBatchNames = names;
+            document.getElementById('delete-sheet-title').textContent = '删除 ' + names.length + ' 张图片';
+            document.getElementById('delete-sheet-desc').textContent = '此操作不可恢复';
+            var mask = document.getElementById('delete-mask');
+            var sheet = document.getElementById('delete-sheet');
+            mask.style.display = 'block';
+            sheet.style.display = 'block';
+            setTimeout(function() { mask.classList.add('show'); sheet.classList.add('show'); }, 10);
+        }
+
+        function doConfirmBatchDelete() {
+            if (pendingBatchNames.length === 0 || !selectedSku) return;
+            var names = pendingBatchNames;
+            pendingBatchNames = [];
+            hideDeleteSheet();
             fetch(API_BASE + '/api/v1/skus/' + encodeURIComponent(selectedSku['货号']) + '/images/delete-batch', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2137,7 +2228,10 @@ def index():
                 if (d.success) {
                     showToast('已删除 ' + d.deleted + ' 张');
                     batchSelected = {};
+                    batchMode = false;
                     document.getElementById('batch-bar').style.display = 'none';
+                    document.getElementById('batch-btn').textContent = '选择';
+                    document.getElementById('batch-btn').style.color = '';
                     loadExistingImages(selectedSku['货号']);
                 }
             });

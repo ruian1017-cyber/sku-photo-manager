@@ -163,6 +163,11 @@ def get_warehouse_drafts():
     except Exception:
         skus = []
 
+    # 过滤手机端已删除的SKU（防误删保护）
+    deleted_nos = db.get_deleted_skus()
+    if deleted_nos:
+        skus = [s for s in skus if s["货号"] not in deleted_nos]
+
     # 标记来源
     for s in skus:
         s["_source"] = "warehouse"
@@ -227,6 +232,15 @@ def delete_sku(sku_no):
         shutil.rmtree(sku["folder_path"], ignore_errors=True)
     # 删除数据库记录
     db.delete_sku(sku_no)
+    # 记录删除（防误删保护：Mac同步时不会恢复此SKU）
+    db.mark_deleted(sku_no)
+    return jsonify({"success": True})
+
+
+@app.route("/api/v1/skus/<sku_no>/unmark-delete", methods=["POST"])
+def unmark_delete_sku(sku_no):
+    """撤销删除标记（用于undo操作）"""
+    db.unmark_deleted(sku_no)
     return jsonify({"success": True})
 
 
@@ -1938,18 +1952,22 @@ def index():
             if (!deletedSkuData) return;
             var data = deletedSkuData;
             deletedSkuData = null;
-            // 重新创建 SKU
-            fetch(API_BASE + '/api/v1/skus/create', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sku_no: data.sku['货号'], color: data.sku['颜色'] || '' })
-            }).then(function(r) { return r.json(); })
-            .then(function(d) {
-                if (d.success) {
-                    showToast('已撤销');
-                    loadDrafts();
-                }
-            });
+            // 撤销删除标记 + 重新创建 SKU
+            fetch(API_BASE + '/api/v1/skus/' + encodeURIComponent(data.sku['货号']) + '/unmark-delete', { method: 'POST' })
+                .then(function() {
+                    return fetch(API_BASE + '/api/v1/skus/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sku_no: data.sku['货号'], color: data.sku['颜色'] || '' })
+                    });
+                })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (d.success) {
+                        showToast('已撤销');
+                        loadDrafts();
+                    }
+                });
         }
 
         // 图片全屏预览 + 双指缩放

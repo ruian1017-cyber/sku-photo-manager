@@ -37,6 +37,14 @@ class Database:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sku_no ON sku_images(sku_no)")
+        # 手机端删除记录（防误删保护）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS deleted_skus (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sku_no TEXT UNIQUE NOT NULL,
+                deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         conn.commit()
         conn.close()
 
@@ -120,6 +128,33 @@ class Database:
         conn = self._get_conn()
         conn.execute("DELETE FROM sku_images WHERE sku_no = ?", (sku_no,))
         conn.execute("DELETE FROM sku_index WHERE sku_no = ?", (sku_no,))
+        conn.commit()
+        conn.close()
+
+    def mark_deleted(self, sku_no):
+        """记录手机端删除的SKU（防误删保护）"""
+        conn = self._get_conn()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO deleted_skus (sku_no) VALUES (?)",
+                (sku_no,)
+            )
+            conn.commit()
+        except Exception:
+            pass
+        conn.close()
+
+    def get_deleted_skus(self):
+        """获取所有被手机端删除的SKU编号"""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT sku_no FROM deleted_skus").fetchall()
+        conn.close()
+        return {r[0] for r in rows}
+
+    def unmark_deleted(self, sku_no):
+        """撤销删除记录"""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM deleted_skus WHERE sku_no = ?", (sku_no,))
         conn.commit()
         conn.close()
 

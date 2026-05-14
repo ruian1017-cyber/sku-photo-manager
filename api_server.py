@@ -107,7 +107,16 @@ def get_warehouse_drafts():
 
     # 合并本地数据库中的SKU
     local_skus = db.get_all_skus()
+    local_map = {ls["sku_no"]: ls for ls in local_skus}
     warehouse_nos = {s["货号"] for s in skus}
+
+    # 给仓库SKU补上本地的 updated_at 和 image_count
+    for s in skus:
+        local = local_map.get(s["货号"])
+        if local:
+            s["_updated_at"] = local.get("updated_at", "")
+            s["_image_count"] = local.get("image_count", 0)
+
     for ls in local_skus:
         if ls["sku_no"] not in warehouse_nos:
             skus.append({
@@ -117,6 +126,7 @@ def get_warehouse_drafts():
                 "码数段": "",
                 "_source": "local",
                 "_image_count": ls.get("image_count", 0),
+                "_updated_at": ls.get("updated_at", ""),
             })
 
     return jsonify({"success": True, "data": skus})
@@ -614,6 +624,13 @@ def index():
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+
+        .sku-time {
+            font-size: 11px;
+            color: var(--text-secondary);
+            opacity: 0.5;
+            margin-left: 6px;
         }
 
         .sku-arrow {
@@ -1117,6 +1134,7 @@ def index():
                 var colorText = colors.length > 2 ? (colors[0] + '/' + colors[1] + '/...') : (sku['颜色'] || '无颜色');
                 var source = sku['_source'] === 'local' ? '<span style="color:#FF9500;font-size:11px;margin-left:4px;">手动</span>' : '';
                 var imgCount = sku['_image_count'] ? '<span style="color:#34C759;font-size:12px;">' + sku['_image_count'] + '张</span>' : '';
+                var updateTime = sku['_updated_at'] ? '<span class="sku-time">' + formatTime(sku['_updated_at']) + '</span>' : '';
 
                 return '<div class="sku-swipe-wrap" data-index="' + i + '">' +
                     '<div class="sku-swipe-actions"><button class="btn-delete" onclick="confirmDelete(' + i + ', event)">删除</button></div>' +
@@ -1124,7 +1142,7 @@ def index():
                     '<div class="sku-icon">' + firstChar + '</div>' +
                     '<div class="sku-info">' +
                     '<div class="sku-no">' + sku['货号'] + source + '</div>' +
-                    '<div class="sku-meta">' + colorText + '</div>' +
+                    '<div class="sku-meta">' + colorText + updateTime + '</div>' +
                     '</div>' +
                     imgCount +
                     '<span class="sku-count" id="sku-count-' + sku['货号'] + '"></span>' +
@@ -1140,6 +1158,22 @@ def index():
         function parseColors(colorStr) {
             if (!colorStr) return [];
             return colorStr.split(/[,/、，\s]+/).filter(function(c) { return c.trim(); });
+        }
+
+        function formatTime(ts) {
+            if (!ts) return '';
+            var d = new Date(ts.replace(' ', 'T'));
+            if (isNaN(d.getTime())) return '';
+            var now = new Date();
+            var diff = (now - d) / 1000;
+            if (diff < 60) return '刚刚';
+            if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
+            if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
+            var m = d.getMonth() + 1;
+            var day = d.getDate();
+            var h = d.getHours();
+            var min = ('0' + d.getMinutes()).slice(-2);
+            return m + '/' + day + ' ' + h + ':' + min;
         }
 
         // 选择SKU

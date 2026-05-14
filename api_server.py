@@ -922,6 +922,35 @@ def index():
         .empty-state .icon { font-size: 40px; margin-bottom: 8px; }
         .empty-state .text { font-size: 14px; }
 
+        /* 骨架屏加载动画 */
+        .skeleton-item {
+            display: flex;
+            align-items: center;
+            padding: 14px 20px;
+            border-bottom: 0.5px solid var(--separator);
+            gap: 14px;
+        }
+        .skeleton-icon {
+            width: 44px; height: 44px; border-radius: 12px;
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            flex-shrink: 0;
+        }
+        .skeleton-lines { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+        .skeleton-line {
+            height: 14px; border-radius: 7px;
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+        .skeleton-line:first-child { width: 60%; }
+        .skeleton-line:last-child { width: 40%; height: 12px; }
+        @keyframes shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+
         /* 隐藏文件输入 */
         #file-input { display: none; }
 
@@ -1001,7 +1030,7 @@ def index():
     <div class="sync-bar" id="sync-bar"></div>
 
     <!-- 调试状态 -->
-    <div id="debug-status" style="background:#FFF3CD;color:#856404;padding:8px 16px;font-size:12px;text-align:center;border-bottom:1px solid #FFEAA7;">页面加载中...</div>
+    <div id="debug-status" style="display:none;background:#FFF3CD;color:#856404;padding:8px 16px;font-size:12px;text-align:center;border-bottom:1px solid #FFEAA7;">页面加载中...</div>
 
     <!-- 手动输入SKU -->
     <div class="section-header">
@@ -1029,14 +1058,15 @@ def index():
     <!-- SKU列表 -->
     <div class="section-header">
         <span class="section-title">暂存货盘</span>
-        <span class="section-count" id="sku-count">加载中...</span>
+        <span class="section-count" id="sku-count"></span>
     </div>
     <div class="card">
         <div class="sku-list" id="sku-list">
-            <div class="empty-state">
-                <div class="icon">📦</div>
-                <div class="text">正在加载SKU列表...</div>
-            </div>
+            <div class="skeleton-item"><div class="skeleton-icon"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>
+            <div class="skeleton-item"><div class="skeleton-icon"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>
+            <div class="skeleton-item"><div class="skeleton-icon"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>
+            <div class="skeleton-item"><div class="skeleton-icon"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>
+            <div class="skeleton-item"><div class="skeleton-icon"></div><div class="skeleton-lines"><div class="skeleton-line"></div><div class="skeleton-line"></div></div></div>
         </div>
     </div>
 
@@ -1063,7 +1093,7 @@ def index():
         </div>
         <div class="card">
             <div class="upload-section">
-                <input type="file" id="file-input" accept="image/*" capture="environment" multiple>
+                <input type="file" id="file-input" accept="image/*" multiple>
                 <button class="upload-btn" id="upload-btn" onclick="document.getElementById('file-input').click()">
                     拍照 / 选择照片
                 </button>
@@ -1098,32 +1128,39 @@ def index():
         var selectedColor = null;
         var selectedFiles = [];
 
-        // 加载仓库暂存
+        // 加载仓库暂存 - 优先缓存，后台刷新
         function loadDrafts() {
-            document.getElementById('sku-count').textContent = '正在加载...';
-            document.getElementById('debug-status').textContent = 'JS已执行，正在请求API...';
+            // 1. 立即从缓存读取显示
+            var cached = localStorage.getItem('sku_cache');
+            var cacheTime = parseInt(localStorage.getItem('sku_cache_time') || '0');
+            if (cached) {
+                try {
+                    skus = JSON.parse(cached);
+                    renderSkuList();
+                    document.getElementById('sku-count').textContent = skus.length + ' 个SKU';
+                } catch(e) {}
+            }
+
+            // 2. 后台请求最新数据
             fetch(API_BASE + '/api/v1/warehouse/drafts?_t=' + Date.now())
-                .then(function(res) {
-                    document.getElementById('debug-status').textContent = 'API响应: ' + res.status + ', 大小: ' + res.headers.get('content-length');
-                    return res.json();
-                })
+                .then(function(res) { return res.json(); })
                 .then(function(data) {
                     if (data.success && data.data.length > 0) {
                         skus = data.data;
-                        renderSkuList();
-                        document.getElementById('sku-count').textContent = skus.length + ' 个SKU';
-                        document.getElementById('debug-status').textContent = '加载成功: ' + skus.length + ' 个SKU';
-                    setTimeout(function() { document.getElementById('debug-status').style.display = 'none'; }, 3000);
-                    } else {
-                        document.getElementById('sku-count').textContent = '暂无数据';
-                        document.getElementById('debug-status').textContent = 'API返回空数据: ' + JSON.stringify(data);
+                        localStorage.setItem('sku_cache', JSON.stringify(skus));
+                        localStorage.setItem('sku_cache_time', Date.now());
+                    } else if (!cached) {
+                        skus = [];
+                    }
+                    renderSkuList();
+                    document.getElementById('sku-count').textContent = skus.length + ' 个SKU';
+                })
+                .catch(function() {
+                    // 网络失败且无缓存时显示空状态
+                    if (!cached) {
+                        document.getElementById('sku-count').textContent = '加载失败';
                         renderSkuList();
                     }
-                })
-                .catch(function(e) {
-                    document.getElementById('sku-count').textContent = '加载失败';
-                    document.getElementById('debug-status').textContent = '错误: ' + e.message;
-                    renderSkuList();
                 });
         }
 
@@ -1420,6 +1457,7 @@ def index():
         // 压缩图片
         function compressImage(file) {
             return new Promise(function(resolve) {
+                if (file.size <= 300000) { resolve(file); return; }
                 var reader = new FileReader();
                 reader.onload = function(e) {
                     var img = new Image();
@@ -1461,45 +1499,81 @@ def index():
             });
         }
 
-        // 上传文件
+        // 并发控制器
+        function parallelRun(tasks, limit) {
+            var results = [];
+            var done = 0;
+            var running = 0;
+            var failed = false;
+            return new Promise(function(resolve) {
+                function next() {
+                    while (running < limit && done < tasks.length && !failed) {
+                        (function(idx) {
+                            running++;
+                            tasks[idx]().then(function(r) {
+                                results[idx] = r;
+                                running--;
+                                done++;
+                                if (done === tasks.length) resolve(results);
+                                else next();
+                            }).catch(function(e) {
+                                failed = true;
+                                running--;
+                                resolve(results);
+                            });
+                        })(done);
+                    }
+                }
+                if (tasks.length === 0) resolve([]);
+                else next();
+            });
+        }
+
+        // 上传文件 - 并行压缩 + 并行上传
         function uploadFiles() {
             if (!selectedSku || selectedColor === null || selectedFiles.length === 0) return;
 
             var btn = document.getElementById('upload-btn');
             var total = selectedFiles.length;
-            var done = 0;
+            var uploaded = 0;
+            var btnOriginal = btn.innerHTML;
             btn.disabled = true;
-            btn.innerHTML = '⏳ 压缩中...';
 
-            // 逐张压缩 + 上传，显示进度
-            var chain = Promise.resolve();
-            selectedFiles.forEach(function(f, idx) {
-                chain = chain.then(function() {
-                    btn.innerHTML = '⏳ 压缩 ' + (idx + 1) + '/' + total;
-                    var needCompress = f.size > 300000;
-                    return needCompress ? compressImage(f) : f;
-                }).then(function(compressed) {
-                    btn.innerHTML = '⬆️ 上传 ' + (idx + 1) + '/' + total;
-                    return uploadOne(compressed, selectedSku['货号'], selectedColor, function(loaded, t) {
-                        var pct = Math.round(loaded / t * 100);
-                        btn.innerHTML = '⬆️ 上传 ' + (idx + 1) + '/' + total + ' ' + pct + '%';
-                    });
-                }).then(function(data) {
-                    done++;
-                });
+            // 阶段1: 并行压缩所有图片
+            btn.innerHTML = '压缩中 0/' + total;
+            var compressTasks = selectedFiles.map(function(f) {
+                return function() { return compressImage(f); };
             });
 
-            chain.then(function() {
-                showToast('上传完成！' + done + '张', 'success');
-                selectedFiles = [];
-                document.getElementById('preview-grid').innerHTML = '';
-                document.getElementById('file-input').value = '';
-                loadExistingImages(selectedSku['货号']);
+            parallelRun(compressTasks, 5).then(function(compressed) {
+                // 阶段2: 并行上传（最多3个并发）
+                var uploadTasks = compressed.map(function(f, idx) {
+                    return function() {
+                        return uploadOne(f, selectedSku['货号'], selectedColor, function(loaded, t) {
+                            var pct = Math.round(loaded / t * 100);
+                            btn.innerHTML = '上传 ' + (idx + 1) + '/' + total + ' ' + pct + '%';
+                        }).then(function(r) {
+                            uploaded++;
+                            btn.innerHTML = '上传 ' + uploaded + '/' + total;
+                            return r;
+                        });
+                    };
+                });
+                return parallelRun(uploadTasks, 3);
+            }).then(function() {
+                if (uploaded > 0) {
+                    showToast('上传完成！' + uploaded + '张', 'success');
+                    localStorage.removeItem('sku_cache');
+                    selectedFiles = [];
+                    document.getElementById('preview-grid').innerHTML = '';
+                    document.getElementById('file-input').value = '';
+                    loadExistingImages(selectedSku['货号']);
+                }
             }).catch(function() {
                 showToast('部分上传失败', 'error');
             }).then(function() {
                 btn.disabled = false;
-                btn.innerHTML = '📷 拍照 / 选择照片';
+                btn.innerHTML = btnOriginal;
             });
         }
 

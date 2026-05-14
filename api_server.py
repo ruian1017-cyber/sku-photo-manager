@@ -1460,6 +1460,8 @@ def index():
 
             // 绑定侧滑事件
             initSwipe();
+            // 重新应用搜索过滤（renderSkuList会重建DOM，过滤状态丢失）
+            filterSkuList();
         }
 
         // 解析颜色
@@ -1576,7 +1578,7 @@ def index():
         // 加载已上传图片
         var allExistingImages = [];
         function loadExistingImages(skuNo) {
-            fetch(API_BASE + '/api/v1/skus/' + encodeURIComponent(skuNo) + '/images')
+            fetch(API_BASE + '/api/v1/skus/' + encodeURIComponent(skuNo) + '/images?_t=' + Date.now())
                 .then(function(res) { return res.json(); })
                 .then(function(data) {
                     if (data.success && data.data.length > 0) {
@@ -1741,18 +1743,23 @@ def index():
             var failed = false;
             return new Promise(function(resolve) {
                 function attempt(idx, retries) {
+                    var completed = false;
                     running++;
                     tasks[idx]().then(function(r) {
+                        if (completed) return;
+                        completed = true;
                         results[idx] = r;
                         running--;
                         done++;
                         if (done === tasks.length) resolve(results);
                         else next();
                     }).catch(function(e) {
+                        if (completed) return;
                         running--;
                         if (retries < maxRetries) {
                             setTimeout(function() { attempt(idx, retries + 1); }, 500);
                         } else {
+                            completed = true;
                             failed = true;
                             resolve(results);
                         }

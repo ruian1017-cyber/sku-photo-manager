@@ -59,7 +59,7 @@ if added > 0:
     if echo "$IMAGES_JSON" | grep -q '"success":true'; then
         # 遍历每个SKU的图片
         echo "$IMAGES_JSON" | python3 -c "
-import json, sys, urllib.request, os, sqlite3
+import json, sys, urllib.request, urllib.parse, os, sqlite3
 
 data = json.load(sys.stdin)
 if not data.get('success'):
@@ -90,8 +90,9 @@ for sku_no, images in data['data'].items():
         # 跳过已存在的
         if fname in local_images:
             continue
-        # 下载图片
-        url = f'{server_url}/api/v1/sync/images/{sku_no}/{fname}'
+        # 下载图片（URL编码中文文件名）
+        encoded_fname = urllib.parse.quote(fname)
+        url = f'{server_url}/api/v1/sync/images/{sku_no}/{encoded_fname}'
         try:
             save_path = os.path.join(uploads_dir, fname)
             urllib.request.urlretrieve(url, save_path)

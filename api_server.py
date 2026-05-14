@@ -76,8 +76,9 @@ def get_thumb(sku_no, filename):
 
     if not os.path.exists(thumb_path):
         try:
-            from PIL import Image as PILImage
+            from PIL import Image as PILImage, ImageOps
             img = PILImage.open(target["file_path"])
+            img = ImageOps.exif_transpose(img)
             w, h = img.size
             if w > 400:
                 h = int(h * 400 / w)
@@ -345,6 +346,69 @@ def upload_images(sku_no):
         return jsonify(result), 400
 
 
+@app.route("/api/v1/skus/<sku_no>/images/reorder", methods=["POST"])
+def reorder_images(sku_no):
+    """重排图片顺序"""
+    data = request.json or {}
+    order = data.get("order", [])
+    if not order:
+        return jsonify({"success": False, "message": "缺少排序数据"}), 400
+    conn = db._get_conn()
+    for idx, file_name in enumerate(order):
+        conn.execute(
+            "UPDATE sku_images SET seq_no = ? WHERE sku_no = ? AND file_name = ?",
+            (idx, sku_no, file_name)
+        )
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/api/v1/skus/<sku_no>/images/delete-batch", methods=["POST"])
+def delete_batch_images(sku_no):
+    """批量删除图片"""
+    data = request.json or {}
+    file_names = data.get("file_names", [])
+    if not file_names:
+        return jsonify({"success": False, "message": "未选择图片"}), 400
+    conn = db._get_conn()
+    deleted = 0
+    for fn in file_names:
+        row = conn.execute(
+            "SELECT file_path FROM sku_images WHERE sku_no = ? AND file_name = ?",
+            (sku_no, fn)
+        ).fetchone()
+        if row:
+            fp = row[0]
+            if os.path.exists(fp):
+                try:
+                    os.remove(fp)
+                except Exception:
+                    pass
+            thumb_path = os.path.join(config.get("data_root", "/tmp"), "thumbs", fn)
+            if os.path.exists(thumb_path):
+                try:
+                    os.remove(thumb_path)
+                except Exception:
+                    pass
+            conn.execute(
+                "DELETE FROM sku_images WHERE sku_no = ? AND file_name = ?",
+                (sku_no, fn)
+            )
+            deleted += 1
+    # 更新图片计数
+    count = conn.execute(
+        "SELECT COUNT(*) FROM sku_images WHERE sku_no = ?", (sku_no,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE sku_index SET image_count = ?, updated_at = datetime('now') WHERE sku_no = ?",
+        (count, sku_no)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "deleted": deleted})
+
+
 # ============ Web页面 ============
 
 @app.route("/app")
@@ -406,6 +470,22 @@ def index():
             padding-bottom: calc(40px + var(--safe-bottom));
             -webkit-font-smoothing: antialiased;
         }
+
+        /* 下拉刷新指示器 */
+        .pull-indicator {
+            position: fixed; top: calc(56px + var(--safe-top)); left: 0; right: 0;
+            display: flex; justify-content: center; align-items: center;
+            height: 0; overflow: hidden; z-index: 100; transition: height 0.2s;
+            background: var(--bg);
+        }
+        .pull-indicator.pulling { height: 50px; }
+        .pull-indicator.refreshing { height: 50px; }
+        .pull-spinner {
+            width: 24px; height: 24px; border: 2.5px solid var(--separator);
+            border-top-color: var(--primary-start); border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
 
         /* 导航栏 */
         .navbar {
@@ -951,6 +1031,66 @@ def index():
             100% { background-position: 200% 0; }
         }
 
+        /* 删除确认底部面板 */
+        .delete-sheet-mask {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+            z-index: 4000; display: none; opacity: 0; transition: opacity 0.25s;
+        }
+        .delete-sheet-mask.show { opacity: 1; }
+        .delete-sheet {
+            position: fixed; bottom: 0; left: 0; right: 0;
+            background: var(--card); border-radius: 16px 16px 0 0;
+            z-index: 4001; transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+            padding-bottom: env(safe-area-inset-bottom, 20px);
+        }
+        .delete-sheet.show { transform: translateY(0); }
+        .delete-sheet-title { padding: 20px 24px 8px; font-size: 17px; font-weight: 600; color: var(--text); }
+        .delete-sheet-desc { padding: 0 24px 20px; font-size: 14px; color: var(--text-secondary); }
+        .delete-sheet-btns { display: flex; flex-direction: column; gap: 0; }
+        .delete-sheet-btn {
+            width: 100%; padding: 16px; border: none; font-size: 17px;
+            background: var(--card); color: var(--error); font-weight: 500;
+            border-top: 0.5px solid var(--separator); cursor: pointer;
+        }
+        .delete-sheet-btn:first-child { border-radius: 0; }
+        .delete-sheet-btn.cancel { color: var(--info); font-weight: 400; }
+        .delete-sheet-btn:active { background: var(--hover); }
+
+        /* 撤销 Toast */
+        .toast-undo {
+            position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+            background: #1C1C1E; color: white; border-radius: 12px;
+            padding: 12px 16px; display: flex; align-items: center; gap: 12px;
+            font-size: 14px; z-index: 5000; opacity: 0; transition: opacity 0.3s;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+        }
+        .toast-undo.show { opacity: 1; }
+        .toast-undo button {
+            background: none; border: none; color: var(--info);
+            font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap;
+        }
+
+        /* 批量选择模式 */
+        .image-cell.selected { opacity: 0.6; }
+        .image-cell.selected::after {
+            content: '✓'; position: absolute; top: 6px; right: 6px;
+            width: 22px; height: 22px; background: var(--info); color: white;
+            border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            font-size: 12px; font-weight: 700;
+        }
+        .image-cell { position: relative; }
+
+        /* 排序模式 */
+        .sort-arrow {
+            position: absolute; width: 28px; height: 28px; border-radius: 50%;
+            background: rgba(0,0,0,0.6); color: white; border: none;
+            font-size: 14px; display: none; align-items: center; justify-content: center;
+            cursor: pointer; z-index: 10;
+        }
+        .sort-mode .sort-arrow { display: flex; }
+        .sort-arrow.left { left: 4px; top: 50%; transform: translateY(-50%); }
+        .sort-arrow.right { right: 4px; top: 50%; transform: translateY(-50%); }
+
         /* 隐藏文件输入 */
         #file-input { display: none; }
 
@@ -1007,6 +1147,8 @@ def index():
             max-height: 90vh;
             object-fit: contain;
             border-radius: 4px;
+            transition: transform 0.1s ease-out;
+            touch-action: none;
         }
     </style>
 </head>
@@ -1028,6 +1170,7 @@ def index():
 
     <!-- 同步提示条 -->
     <div class="sync-bar" id="sync-bar"></div>
+    <div class="pull-indicator" id="pull-indicator"><div class="pull-spinner"></div></div>
 
     <!-- 调试状态 -->
     <div id="debug-status" style="display:none;background:#FFF3CD;color:#856404;padding:8px 16px;font-size:12px;text-align:center;border-bottom:1px solid #FFEAA7;">页面加载中...</div>
@@ -1106,8 +1249,13 @@ def index():
     <div id="existing-section" style="display:none;">
         <div class="section-header">
             <span class="section-title">已上传图片</span>
-            <span class="section-count" id="existing-count">0</span>
+            <div style="display:flex;align-items:center;gap:10px;">
+                <span class="section-count" id="existing-count">0</span>
+                <button id="sort-btn" onclick="toggleSortMode()" style="background:none;border:none;color:var(--info);font-size:14px;cursor:pointer;">排序</button>
+                <button id="batch-btn" onclick="toggleBatchMode()" style="background:none;border:none;color:var(--info);font-size:14px;cursor:pointer;">选择</button>
+            </div>
         </div>
+        <div id="batch-bar" style="display:none;position:fixed;bottom:calc(40px + var(--safe-bottom));left:0;right:0;background:var(--card);padding:12px 20px;align-items:center;justify-content:space-between;border-top:0.5px solid var(--separator);z-index:100;"></div>
         <div class="card">
             <div class="image-grid" id="existing-grid"></div>
         </div>
@@ -1116,6 +1264,23 @@ def index():
     <!-- 图片全屏预览 -->
     <div class="img-preview-overlay" id="img-preview" onclick="closePreview()">
         <img id="preview-img" src="" alt="">
+    </div>
+
+    <!-- 删除确认底部面板 -->
+    <div class="delete-sheet-mask" id="delete-mask" onclick="hideDeleteSheet()"></div>
+    <div class="delete-sheet" id="delete-sheet">
+        <div class="delete-sheet-title" id="delete-sheet-title">删除 SKU</div>
+        <div class="delete-sheet-desc" id="delete-sheet-desc">此操作不可恢复</div>
+        <div class="delete-sheet-btns">
+            <button class="delete-sheet-btn" id="delete-confirm-btn" onclick="doDelete()">删除</button>
+            <button class="delete-sheet-btn cancel" onclick="hideDeleteSheet()">取消</button>
+        </div>
+    </div>
+
+    <!-- 撤销 Toast -->
+    <div class="toast-undo" id="toast-undo">
+        <span id="toast-undo-msg"></span>
+        <button id="toast-undo-btn" onclick="undoDelete()">撤销</button>
     </div>
 
     <!-- Toast -->
@@ -1427,8 +1592,15 @@ def index():
             countEl.textContent = filtered.length + ' 张';
             grid.innerHTML = filtered.map(function(img) {
                 var thumb = img.url + '/thumb';
-                return '<div class="image-cell">' +
-                    '<div class="image-item" onclick="openPreview(&apos;' + img.url + '&apos;)">' +
+                var selected = batchMode && batchSelected[img.file_name] ? ' selected' : '';
+                var clickAction = batchMode
+                    ? 'onclick="toggleBatchSelect(&apos;' + img.file_name + '&apos;, event)"'
+                    : 'onclick="openPreview(&apos;' + img.url + '&apos;)"';
+                var sortLeft = '<button class="sort-arrow left" onclick="moveImage(&apos;' + img.file_name + '&apos;, -1);event.stopPropagation();">‹</button>';
+                var sortRight = '<button class="sort-arrow right" onclick="moveImage(&apos;' + img.file_name + '&apos;, 1);event.stopPropagation();">›</button>';
+                return '<div class="image-cell' + selected + '" data-fn="' + img.file_name + '">' +
+                    sortLeft + sortRight +
+                    '<div class="image-item" ' + clickAction + '>' +
                     '<img src="' + thumb + '" alt="' + img.file_name + '" loading="lazy">' +
                     '<div class="image-name">' + img.file_name + '</div>' +
                     '</div>' +
@@ -1447,10 +1619,15 @@ def index():
         });
 
         // 显示预览
+        var previewObjectURLs = [];
         function showPreview(files) {
+            previewObjectURLs.forEach(function(url) { URL.revokeObjectURL(url); });
+            previewObjectURLs = [];
             var grid = document.getElementById('preview-grid');
             grid.innerHTML = files.map(function(f) {
-                return '<div class="image-item"><img src="' + URL.createObjectURL(f) + '" alt="' + f.name + '"><div class="image-name">' + f.name + '</div></div>';
+                var url = URL.createObjectURL(f);
+                previewObjectURLs.push(url);
+                return '<div class="image-item"><img src="' + url + '" alt="' + f.name + '"><div class="image-name">' + f.name + '</div></div>';
             }).join('');
         }
 
@@ -1499,29 +1676,35 @@ def index():
             });
         }
 
-        // 并发控制器
-        function parallelRun(tasks, limit) {
+        // 并发控制器（带重试）
+        function parallelRun(tasks, limit, maxRetries) {
+            maxRetries = maxRetries || 1;
             var results = [];
             var done = 0;
             var running = 0;
             var failed = false;
             return new Promise(function(resolve) {
+                function attempt(idx, retries) {
+                    running++;
+                    tasks[idx]().then(function(r) {
+                        results[idx] = r;
+                        running--;
+                        done++;
+                        if (done === tasks.length) resolve(results);
+                        else next();
+                    }).catch(function(e) {
+                        running--;
+                        if (retries < maxRetries) {
+                            setTimeout(function() { attempt(idx, retries + 1); }, 500);
+                        } else {
+                            failed = true;
+                            resolve(results);
+                        }
+                    });
+                }
                 function next() {
                     while (running < limit && done < tasks.length && !failed) {
-                        (function(idx) {
-                            running++;
-                            tasks[idx]().then(function(r) {
-                                results[idx] = r;
-                                running--;
-                                done++;
-                                if (done === tasks.length) resolve(results);
-                                else next();
-                            }).catch(function(e) {
-                                failed = true;
-                                running--;
-                                resolve(results);
-                            });
-                        })(done);
+                        attempt(done, 0);
                     }
                 }
                 if (tasks.length === 0) resolve([]);
@@ -1559,7 +1742,7 @@ def index():
                         });
                     };
                 });
-                return parallelRun(uploadTasks, 3);
+                return parallelRun(uploadTasks, 3, 1);
             }).then(function() {
                 if (uploaded > 0) {
                     showToast('上传完成！' + uploaded + '张', 'success');
@@ -1608,40 +1791,166 @@ def index():
             }
         }
 
+        // 删除确认 - 底部面板
+        var pendingDeleteIndex = -1;
+        var deletedSkuData = null;
+        var undoTimer = null;
+
         function confirmDelete(index, e) {
             e.stopPropagation();
+            pendingDeleteIndex = index;
             var sku = skus[index];
-            if (confirm('确定删除 SKU: ' + sku['货号'] + ' ?')) {
-                fetch(API_BASE + '/api/v1/skus/' + encodeURIComponent(sku['货号']) + '/delete', { method: 'POST' })
-                    .then(function(r) { return r.json(); })
-                    .then(function(d) {
-                        if (d.success) {
-                            showToast('已删除', 'success');
-                            loadDrafts();
-                        } else {
-                            showToast(d.message || '删除失败', 'error');
-                        }
-                    })
-                    .catch(function() { showToast('网络错误', 'error'); });
-            }
+            document.getElementById('delete-sheet-title').textContent = '删除 ' + sku['货号'] + '?';
+            document.getElementById('delete-sheet-desc').textContent = sku['颜色'] ? '颜色: ' + sku['颜色'] : '此操作不可恢复';
+            var mask = document.getElementById('delete-mask');
+            var sheet = document.getElementById('delete-sheet');
+            mask.style.display = 'block';
+            sheet.style.display = 'block';
+            setTimeout(function() { mask.classList.add('show'); sheet.classList.add('show'); }, 10);
         }
 
-        // 图片全屏预览
+        function hideDeleteSheet() {
+            var mask = document.getElementById('delete-mask');
+            var sheet = document.getElementById('delete-sheet');
+            mask.classList.remove('show');
+            sheet.classList.remove('show');
+            setTimeout(function() { mask.style.display = 'none'; sheet.style.display = 'none'; }, 300);
+            pendingDeleteIndex = -1;
+        }
+
+        function doDelete() {
+            if (pendingDeleteIndex < 0) return;
+            var sku = skus[pendingDeleteIndex];
+            var skuNo = sku['货号'];
+            // 保存删除前的数据用于撤销
+            deletedSkuData = { index: pendingDeleteIndex, sku: JSON.parse(JSON.stringify(sku)) };
+            hideDeleteSheet();
+            fetch(API_BASE + '/api/v1/skus/' + encodeURIComponent(skuNo) + '/delete', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    if (d.success) {
+                        showToastWithUndo('已删除 ' + skuNo);
+                        loadDrafts();
+                    } else {
+                        showToast(d.message || '删除失败', 'error');
+                        deletedSkuData = null;
+                    }
+                })
+                .catch(function() { showToast('网络错误', 'error'); deletedSkuData = null; });
+        }
+
+        function showToastWithUndo(msg) {
+            var toast = document.getElementById('toast-undo');
+            document.getElementById('toast-undo-msg').textContent = msg;
+            toast.classList.add('show');
+            clearTimeout(undoTimer);
+            undoTimer = setTimeout(function() {
+                toast.classList.remove('show');
+                deletedSkuData = null;
+            }, 5000);
+        }
+
+        function undoDelete() {
+            clearTimeout(undoTimer);
+            document.getElementById('toast-undo').classList.remove('show');
+            if (!deletedSkuData) return;
+            var data = deletedSkuData;
+            deletedSkuData = null;
+            // 重新创建 SKU
+            fetch(API_BASE + '/api/v1/skus/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sku_no: data.sku['货号'], color: data.sku['颜色'] || '' })
+            }).then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.success) {
+                    showToast('已撤销');
+                    loadDrafts();
+                }
+            });
+        }
+
+        // 图片全屏预览 + 双指缩放
+        var previewScale = 1, previewX = 0, previewY = 0;
+        var pinchStartDist = 0, pinchStartScale = 1;
+        var isDragging = false, dragStartX = 0, dragStartY = 0, dragStartPX = 0, dragStartPY = 0;
+
         function openPreview(url) {
-            document.getElementById('preview-img').src = url;
+            previewScale = 1; previewX = 0; previewY = 0;
+            var img = document.getElementById('preview-img');
+            img.src = url;
+            img.style.transform = '';
             var overlay = document.getElementById('img-preview');
             overlay.style.display = 'flex';
             setTimeout(function() { overlay.classList.add('show'); }, 10);
         }
+
+        function updatePreviewTransform() {
+            var img = document.getElementById('preview-img');
+            img.style.transform = 'translate(' + previewX + 'px, ' + previewY + 'px) scale(' + previewScale + ')';
+        }
+
+        (function() {
+            var overlay = document.getElementById('img-preview');
+            var img = document.getElementById('preview-img');
+
+            overlay.addEventListener('touchstart', function(e) {
+                if (e.touches.length === 2) {
+                    e.preventDefault();
+                    var dx = e.touches[0].clientX - e.touches[1].clientX;
+                    var dy = e.touches[0].clientY - e.touches[1].clientY;
+                    pinchStartDist = Math.sqrt(dx * dx + dy * dy);
+                    pinchStartScale = previewScale;
+                } else if (e.touches.length === 1 && previewScale > 1) {
+                    isDragging = true;
+                    dragStartX = e.touches[0].clientX;
+                    dragStartY = e.touches[0].clientY;
+                    dragStartPX = previewX;
+                    dragStartPY = previewY;
+                }
+            }, { passive: false });
+
+            overlay.addEventListener('touchmove', function(e) {
+                if (e.touches.length === 2) {
+                    e.preventDefault();
+                    var dx = e.touches[0].clientX - e.touches[1].clientX;
+                    var dy = e.touches[0].clientY - e.touches[1].clientY;
+                    var dist = Math.sqrt(dx * dx + dy * dy);
+                    previewScale = Math.min(Math.max(pinchStartScale * (dist / pinchStartDist), 0.5), 5);
+                    updatePreviewTransform();
+                } else if (e.touches.length === 1 && isDragging) {
+                    e.preventDefault();
+                    previewX = dragStartPX + (e.touches[0].clientX - dragStartX);
+                    previewY = dragStartPY + (e.touches[0].clientY - dragStartY);
+                    updatePreviewTransform();
+                }
+            }, { passive: false });
+
+            overlay.addEventListener('touchend', function(e) {
+                if (e.touches.length < 2) {
+                    isDragging = false;
+                    if (previewScale <= 1) { previewScale = 1; previewX = 0; previewY = 0; updatePreviewTransform(); }
+                }
+            });
+        })();
 
         function closePreview() {
             var overlay = document.getElementById('img-preview');
             overlay.classList.remove('show');
             setTimeout(function() {
                 overlay.style.display = 'none';
-                document.getElementById('preview-img').src = '';
+                var img = document.getElementById('preview-img');
+                img.src = '';
+                img.style.transform = '';
             }, 250);
         }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                var overlay = document.getElementById('img-preview');
+                if (overlay.style.display === 'flex') closePreview();
+            }
+        });
 
         // Toast
         function showToast(msg, type) {
@@ -1707,6 +2016,131 @@ def index():
 
         function hideSyncBar() {
             document.getElementById('sync-bar').className = 'sync-bar';
+        }
+
+        // 下拉刷新
+        (function() {
+            var indicator = document.getElementById('pull-indicator');
+            var startY = 0, pulling = false, refreshing = false;
+            document.addEventListener('touchstart', function(e) {
+                if (window.scrollY === 0 && !refreshing) {
+                    startY = e.touches[0].clientY;
+                    pulling = true;
+                }
+            }, { passive: true });
+            document.addEventListener('touchmove', function(e) {
+                if (!pulling || refreshing) return;
+                var dy = e.touches[0].clientY - startY;
+                if (dy > 30 && window.scrollY === 0) {
+                    indicator.classList.add('pulling');
+                }
+            }, { passive: true });
+            document.addEventListener('touchend', function() {
+                if (!pulling) return;
+                pulling = false;
+                if (indicator.classList.contains('pulling')) {
+                    refreshing = true;
+                    indicator.classList.remove('pulling');
+                    indicator.classList.add('refreshing');
+                    localStorage.removeItem('sku_cache');
+                    loadDrafts();
+                    setTimeout(function() {
+                        indicator.classList.remove('refreshing');
+                        refreshing = false;
+                    }, 1500);
+                }
+            });
+        })();
+
+        // 排序模式
+        var sortMode = false;
+
+        function toggleSortMode() {
+            sortMode = !sortMode;
+            var btn = document.getElementById('sort-btn');
+            btn.textContent = sortMode ? '完成' : '排序';
+            btn.style.color = sortMode ? 'var(--success)' : '';
+            var grid = document.getElementById('existing-grid');
+            if (sortMode) grid.classList.add('sort-mode');
+            else grid.classList.remove('sort-mode');
+        }
+
+        function moveImage(fileName, direction) {
+            if (!selectedSku) return;
+            var images = allExistingImages.slice();
+            var idx = -1;
+            for (var i = 0; i < images.length; i++) {
+                if (images[i].file_name === fileName) { idx = i; break; }
+            }
+            if (idx < 0) return;
+            var newIdx = idx + direction;
+            if (newIdx < 0 || newIdx >= images.length) return;
+            var tmp = images[idx];
+            images[idx] = images[newIdx];
+            images[newIdx] = tmp;
+            allExistingImages = images;
+            // 保存新顺序
+            var order = images.map(function(img) { return img.file_name; });
+            fetch(API_BASE + '/api/v1/skus/' + encodeURIComponent(selectedSku['货号']) + '/images/reorder', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ order: order })
+            });
+            renderExistingImages();
+        }
+
+        // 批量删除模式
+        var batchMode = false;
+        var batchSelected = {};
+
+        function toggleBatchMode() {
+            batchMode = !batchMode;
+            batchSelected = {};
+            var btn = document.getElementById('batch-btn');
+            btn.textContent = batchMode ? '取消' : '选择';
+            btn.style.color = batchMode ? 'var(--error)' : '';
+            renderExistingImages();
+        }
+
+        function toggleBatchSelect(fileName, e) {
+            if (e) e.stopPropagation();
+            if (batchSelected[fileName]) delete batchSelected[fileName];
+            else batchSelected[fileName] = true;
+            var count = Object.keys(batchSelected).length;
+            var bar = document.getElementById('batch-bar');
+            if (count > 0) {
+                bar.style.display = 'flex';
+                bar.innerHTML = '<span style="font-size:14px;color:var(--text);">已选 ' + count + ' 张</span>' +
+                    '<button onclick="doBatchDelete()" style="background:none;border:none;color:var(--error);font-size:15px;font-weight:600;cursor:pointer;">删除</button>';
+            } else {
+                bar.style.display = 'none';
+            }
+            // 更新选中态
+            var cells = document.querySelectorAll('.image-cell');
+            for (var i = 0; i < cells.length; i++) {
+                var fn = cells[i].getAttribute('data-fn');
+                if (fn && batchSelected[fn]) cells[i].classList.add('selected');
+                else cells[i].classList.remove('selected');
+            }
+        }
+
+        function doBatchDelete() {
+            var names = Object.keys(batchSelected);
+            if (names.length === 0 || !selectedSku) return;
+            if (!confirm('确定删除 ' + names.length + ' 张图片？')) return;
+            fetch(API_BASE + '/api/v1/skus/' + encodeURIComponent(selectedSku['货号']) + '/images/delete-batch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_names: names })
+            }).then(function(r) { return r.json(); })
+            .then(function(d) {
+                if (d.success) {
+                    showToast('已删除 ' + d.deleted + ' 张');
+                    batchSelected = {};
+                    document.getElementById('batch-bar').style.display = 'none';
+                    loadExistingImages(selectedSku['货号']);
+                }
+            });
         }
 
         // 页面加载

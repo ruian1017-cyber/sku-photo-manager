@@ -1,13 +1,20 @@
 #!/bin/bash
-# 将本地 sku.db 推送到远程服务器
+# Mac端同步脚本 - 轮询服务器，有请求时推送 sku.db
 LOCAL_DB="/Volumes/Ryan/仓库货盘/仓库系统数据/sku.db"
-SERVER="http://81.71.19.125/api/v1/warehouse/push"
+SERVER="http://81.71.19.125"
 
-if [ ! -f "$LOCAL_DB" ]; then
-    exit 0
-fi
+while true; do
+    # 检查是否有同步请求
+    PENDING=$(curl -s --connect-timeout 5 --max-time 10 "$SERVER/api/v1/warehouse/check-sync" 2>/dev/null)
 
-curl -s -X POST "$SERVER" \
-    -F "db_file=@$LOCAL_DB" \
-    --connect-timeout 10 \
-    --max-time 30 > /dev/null 2>&1
+    if echo "$PENDING" | grep -q '"pending":true'; then
+        if [ -f "$LOCAL_DB" ]; then
+            curl -s -X POST "$SERVER/api/v1/warehouse/push" \
+                -F "db_file=@$LOCAL_DB" \
+                --connect-timeout 10 \
+                --max-time 30 > /dev/null 2>&1
+        fi
+    fi
+
+    sleep 30
+done

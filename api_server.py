@@ -1,5 +1,6 @@
 import os
 import threading
+from datetime import datetime
 from flask import Flask, jsonify, send_file, request
 from database import Database
 from warehouse_sync import WarehouseSync
@@ -159,15 +160,16 @@ def delete_sku(sku_no):
 
 # ============ 仓库同步 ============
 
+SYNC_REQUEST_FILE = os.path.join(os.path.dirname(config["warehouse_db_path"]), ".sync_request")
+
 @app.route("/api/v1/warehouse/push", methods=["POST"])
 def push_warehouse_db():
-    """Mac端自动推送 sku.db 到服务器"""
+    """Mac端推送 sku.db 到服务器"""
     file = request.files.get("db_file")
     if not file or not file.filename.endswith(".db"):
         return jsonify({"success": False, "message": "无效文件"}), 400
 
     db_path = config["warehouse_db_path"]
-    # 备份旧文件
     if os.path.exists(db_path):
         import shutil
         shutil.copy2(db_path, db_path + ".bak")
@@ -175,16 +177,27 @@ def push_warehouse_db():
     file.save(db_path)
     global warehouse
     warehouse = WarehouseSync(db_path)
+
+    # 清除同步请求标记
+    if os.path.exists(SYNC_REQUEST_FILE):
+        os.remove(SYNC_REQUEST_FILE)
+
     return jsonify({"success": True})
 
 
-@app.route("/api/v1/warehouse/reload", methods=["POST"])
-def reload_warehouse():
-    """重新加载仓库数据库（Mac推送后调用）"""
-    global warehouse
-    db_path = config["warehouse_db_path"]
-    warehouse = WarehouseSync(db_path)
+@app.route("/api/v1/warehouse/sync-request", methods=["POST"])
+def create_sync_request():
+    """手机端触发：标记需要同步"""
+    with open(SYNC_REQUEST_FILE, "w") as f:
+        f.write(str(datetime.now().timestamp()))
     return jsonify({"success": True})
+
+
+@app.route("/api/v1/warehouse/check-sync", methods=["GET"])
+def check_sync_request():
+    """Mac端轮询：检查是否有同步请求"""
+    pending = os.path.exists(SYNC_REQUEST_FILE)
+    return jsonify({"success": True, "pending": pending})
 
 
 # ============ 手动添加SKU ============
@@ -1469,25 +1482,52 @@ def index():
             setTimeout(function() { toast.className = 'toast'; }, 2500);
         }
 
-        // 仓库同步 - 重新加载数据
+        // 仓库同步 - 触发Mac推送
         function triggerSync() {
             var btn = document.getElementById('sync-btn');
             btn.classList.add('syncing');
-            showSyncBar('正在刷新...');
+            showSyncBar('已通知Mac同步，请稍候...');
 
-            fetch(API_BASE + '/api/v1/warehouse/reload', { method: 'POST' })
+            fetch(API_BASE + '/api/v1/warehouse/sync-request', { method: 'POST' })
                 .then(function(res) { return res.json(); })
                 .then(function(data) {
                     if (data.success) {
-                        loadDrafts();
-                        showSyncBar('刷新成功');
-                        setTimeout(hideSyncBar, 1500);
+                        // 轮询等待Mac推送完成
+                        pollSyncComplete();
                     } else {
-                        showSyncBar('刷新失败', true);
+                        showSyncBar('触发失败', true);
+                        btn.classList.remove('syncing');
                     }
                 })
-                .catch(function() { showSyncBar('网络错误', true); })
-                .then(function() { btn.classList.remove('syncing'); });
+                .catch(function() {
+                    showSyncBar('网络错误', true);
+                    btn.classList.remove('syncing');
+                });
+        }
+
+        function pollSyncComplete() {
+            var tries = 0;
+            var timer = setInterval(function() {
+                tries++;
+                fetch(API_BASE + '/api/v1/warehouse/drafts?_t=' + Date.now())
+                    .then(function(r) { return r.json(); })
+                    .then(function(d) {
+                        if (d.success && d.data) {
+                            skus = d.data;
+                            renderSkuList();
+                            document.getElementById('sku-count').textContent = skus.length + ' 个SKU';
+                            showSyncBar('同步完成！' + skus.length + ' 个SKU');
+                            setTimeout(hideSyncBar, 1500);
+                            document.getElementById('sync-btn').classList.remove('syncing');
+                            clearInterval(timer);
+                        }
+                    });
+                if (tries >= 20) {
+                    showSyncBar('同步超时，请确认Mac在线', true);
+                    document.getElementById('sync-btn').classList.remove('syncing');
+                    clearInterval(timer);
+                }
+            }, 3000);
         }
 
         function showSyncBar(msg, isError) {

@@ -159,27 +159,32 @@ def delete_sku(sku_no):
 
 # ============ 仓库同步 ============
 
-@app.route("/api/v1/warehouse/sync", methods=["POST"])
-def sync_warehouse_db():
-    """上传本地 sku.db 覆盖服务器上的仓库数据库"""
+@app.route("/api/v1/warehouse/push", methods=["POST"])
+def push_warehouse_db():
+    """Mac端自动推送 sku.db 到服务器"""
     file = request.files.get("db_file")
-    if not file:
-        return jsonify({"success": False, "message": "未选择文件"}), 400
-    if not file.filename.endswith(".db"):
-        return jsonify({"success": False, "message": "请选择 .db 文件"}), 400
+    if not file or not file.filename.endswith(".db"):
+        return jsonify({"success": False, "message": "无效文件"}), 400
 
     db_path = config["warehouse_db_path"]
     # 备份旧文件
-    backup_path = db_path + ".bak"
     if os.path.exists(db_path):
         import shutil
-        shutil.copy2(db_path, backup_path)
+        shutil.copy2(db_path, db_path + ".bak")
 
     file.save(db_path)
-    # 重新初始化 warehouse sync 连接
     global warehouse
     warehouse = WarehouseSync(db_path)
-    return jsonify({"success": True, "message": "同步成功"})
+    return jsonify({"success": True})
+
+
+@app.route("/api/v1/warehouse/reload", methods=["POST"])
+def reload_warehouse():
+    """重新加载仓库数据库（Mac推送后调用）"""
+    global warehouse
+    db_path = config["warehouse_db_path"]
+    warehouse = WarehouseSync(db_path)
+    return jsonify({"success": True})
 
 
 # ============ 手动添加SKU ============
@@ -899,7 +904,6 @@ def index():
                 </svg>
             </button>
         </div>
-        <input type="file" id="sync-file-input" accept=".db" style="display:none" onchange="doSync(this)">
     </div>
 
     <!-- 同步提示条 -->
@@ -1465,47 +1469,25 @@ def index():
             setTimeout(function() { toast.className = 'toast'; }, 2500);
         }
 
-        // 仓库同步
+        // 仓库同步 - 重新加载数据
         function triggerSync() {
-            document.getElementById('sync-file-input').click();
-        }
-
-        function doSync(input) {
-            var file = input.files[0];
-            if (!file) return;
-            if (!file.name.endsWith('.db')) {
-                showSyncBar('请选择 .db 文件', true);
-                return;
-            }
-
             var btn = document.getElementById('sync-btn');
             btn.classList.add('syncing');
-            showSyncBar('正在同步...');
+            showSyncBar('正在刷新...');
 
-            var formData = new FormData();
-            formData.append('db_file', file);
-
-            fetch(API_BASE + '/api/v1/warehouse/sync', {
-                method: 'POST',
-                body: formData
-            })
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-                if (data.success) {
-                    showSyncBar('同步成功！正在刷新...');
-                    loadDrafts();
-                    setTimeout(function() { hideSyncBar(); }, 1500);
-                } else {
-                    showSyncBar('同步失败: ' + data.message, true);
-                }
-            })
-            .catch(function() {
-                showSyncBar('网络错误', true);
-            })
-            .then(function() {
-                btn.classList.remove('syncing');
-                input.value = '';
-            });
+            fetch(API_BASE + '/api/v1/warehouse/reload', { method: 'POST' })
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    if (data.success) {
+                        loadDrafts();
+                        showSyncBar('刷新成功');
+                        setTimeout(hideSyncBar, 1500);
+                    } else {
+                        showSyncBar('刷新失败', true);
+                    }
+                })
+                .catch(function() { showSyncBar('网络错误', true); })
+                .then(function() { btn.classList.remove('syncing'); });
         }
 
         function showSyncBar(msg, isError) {

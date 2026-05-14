@@ -157,6 +157,31 @@ def delete_sku(sku_no):
     return jsonify({"success": True})
 
 
+# ============ 仓库同步 ============
+
+@app.route("/api/v1/warehouse/sync", methods=["POST"])
+def sync_warehouse_db():
+    """上传本地 sku.db 覆盖服务器上的仓库数据库"""
+    file = request.files.get("db_file")
+    if not file:
+        return jsonify({"success": False, "message": "未选择文件"}), 400
+    if not file.filename.endswith(".db"):
+        return jsonify({"success": False, "message": "请选择 .db 文件"}), 400
+
+    db_path = config["warehouse_db_path"]
+    # 备份旧文件
+    backup_path = db_path + ".bak"
+    if os.path.exists(db_path):
+        import shutil
+        shutil.copy2(db_path, backup_path)
+
+    file.save(db_path)
+    # 重新初始化 warehouse sync 连接
+    global warehouse
+    warehouse = WarehouseSync(db_path)
+    return jsonify({"success": True, "message": "同步成功"})
+
+
 # ============ 手动添加SKU ============
 
 @app.route("/api/v1/skus/create", methods=["POST"])
@@ -315,6 +340,66 @@ def index():
             font-size: 18px;
             font-weight: 600;
         }
+
+        .navbar-actions {
+            position: absolute;
+            right: 16px;
+            top: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .nav-icon-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .nav-icon-btn:active {
+            background: rgba(0,0,0,0.1);
+            transform: scale(0.92);
+        }
+        .nav-icon-btn svg {
+            width: 20px;
+            height: 20px;
+            color: var(--text-primary);
+        }
+        .nav-icon-btn.syncing svg {
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        /* 同步提示条 */
+        .sync-bar {
+            position: fixed;
+            top: calc(56px + var(--safe-top));
+            left: 0;
+            right: 0;
+            background: rgba(52,199,89,0.95);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            color: white;
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: 500;
+            text-align: center;
+            z-index: 999;
+            transform: translateY(-100%);
+            transition: transform 0.3s ease;
+        }
+        .sync-bar.show { transform: translateY(0); }
+        .sync-bar.error { background: rgba(255,59,48,0.95); }
 
         /* 区域标题 */
         .section-header {
@@ -804,7 +889,21 @@ def index():
     <!-- 导航栏 -->
     <div class="navbar">
         <span class="navbar-title">SKU拍照上传</span>
+        <div class="navbar-actions">
+            <button class="nav-icon-btn" id="sync-btn" onclick="triggerSync()" title="同步仓库数据">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                    <path d="M3 3v5h5"/>
+                    <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+                    <path d="M16 16h5v5"/>
+                </svg>
+            </button>
+        </div>
+        <input type="file" id="sync-file-input" accept=".db" style="display:none" onchange="doSync(this)">
     </div>
+
+    <!-- 同步提示条 -->
+    <div class="sync-bar" id="sync-bar"></div>
 
     <!-- 调试状态 -->
     <div id="debug-status" style="background:#FFF3CD;color:#856404;padding:8px 16px;font-size:12px;text-align:center;border-bottom:1px solid #FFEAA7;">页面加载中...</div>
@@ -1364,6 +1463,59 @@ def index():
             toast.textContent = msg;
             toast.className = 'toast ' + (type || '') + ' show';
             setTimeout(function() { toast.className = 'toast'; }, 2500);
+        }
+
+        // 仓库同步
+        function triggerSync() {
+            document.getElementById('sync-file-input').click();
+        }
+
+        function doSync(input) {
+            var file = input.files[0];
+            if (!file) return;
+            if (!file.name.endsWith('.db')) {
+                showSyncBar('请选择 .db 文件', true);
+                return;
+            }
+
+            var btn = document.getElementById('sync-btn');
+            btn.classList.add('syncing');
+            showSyncBar('正在同步...');
+
+            var formData = new FormData();
+            formData.append('db_file', file);
+
+            fetch(API_BASE + '/api/v1/warehouse/sync', {
+                method: 'POST',
+                body: formData
+            })
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    showSyncBar('同步成功！正在刷新...');
+                    loadDrafts();
+                    setTimeout(function() { hideSyncBar(); }, 1500);
+                } else {
+                    showSyncBar('同步失败: ' + data.message, true);
+                }
+            })
+            .catch(function() {
+                showSyncBar('网络错误', true);
+            })
+            .then(function() {
+                btn.classList.remove('syncing');
+                input.value = '';
+            });
+        }
+
+        function showSyncBar(msg, isError) {
+            var bar = document.getElementById('sync-bar');
+            bar.textContent = msg;
+            bar.className = 'sync-bar show' + (isError ? ' error' : '');
+        }
+
+        function hideSyncBar() {
+            document.getElementById('sync-bar').className = 'sync-bar';
         }
 
         // 页面加载

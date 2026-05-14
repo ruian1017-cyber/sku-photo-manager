@@ -91,6 +91,67 @@ def get_thumb(sku_no, filename):
     return send_file(thumb_path)
 
 
+# ============ 图片同步接口（Mac拉取用） ============
+
+@app.route("/api/v1/sync/images", methods=["GET"])
+def list_all_images():
+    """列出所有SKU的图片，供Mac同步"""
+    conn = db._get_conn()
+    rows = conn.execute(
+        "SELECT si.sku_no, si.file_name, si.file_path, si.seq_no "
+        "FROM sku_images si ORDER BY si.sku_no, si.seq_no"
+    ).fetchall()
+    conn.close()
+    result = {}
+    for r in rows:
+        sku_no = r[0]
+        if sku_no not in result:
+            result[sku_no] = []
+        result[sku_no].append({
+            "file_name": r[1],
+            "file_path": r[2],
+            "seq_no": r[3]
+        })
+    return jsonify({"success": True, "data": result})
+
+
+@app.route("/api/v1/sync/images/<sku_no>/<filename>", methods=["GET"])
+def download_image_for_sync(sku_no, filename):
+    """供Mac下载单张图片"""
+    images = db.get_images(sku_no)
+    for img in images:
+        if img["file_name"] == filename and os.path.exists(img["file_path"]):
+            return send_file(img["file_path"])
+    return jsonify({"success": False, "message": "不存在"}), 404
+
+
+@app.route("/api/v1/sync/new-skus", methods=["GET"])
+def list_new_skus():
+    """列出手机端创建的、不在仓库系统中的SKU"""
+    conn = db._get_conn()
+    # 获取所有本地创建的SKU
+    local_rows = conn.execute(
+        "SELECT sku_no, color FROM sku_index"
+    ).fetchall()
+    conn.close()
+
+    # 获取仓库系统中的货号
+    warehouse_nos = set()
+    try:
+        wh_skus = warehouse.get_draft_skus()
+        warehouse_nos = {s["货号"] for s in wh_skus}
+    except Exception:
+        pass
+
+    # 筛选出不在仓库中的SKU
+    new_skus = []
+    for r in local_rows:
+        if r[0] not in warehouse_nos:
+            new_skus.append({"货号": r[0], "颜色": r[1] or ""})
+
+    return jsonify({"success": True, "data": new_skus})
+
+
 # ============ 仓库同步接口 ============
 
 @app.route("/api/v1/warehouse/drafts", methods=["GET"])

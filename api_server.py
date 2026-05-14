@@ -1705,25 +1705,10 @@ def index():
 
         // 压缩图片
         function compressImage(file) {
+            // 直接上传原图，不做客户端压缩，保留高清画质
+            // 缩略图由服务端Pillow生成，不影响原图
             return new Promise(function(resolve) {
-                if (file.size <= 300000) { resolve(file); return; }
-                var reader = new FileReader();
-                reader.onload = function(e) {
-                    var img = new Image();
-                    img.onload = function() {
-                        var w = img.width, h = img.height;
-                        var maxW = 1200;
-                        if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
-                        var canvas = document.createElement('canvas');
-                        canvas.width = w; canvas.height = h;
-                        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-                        canvas.toBlob(function(blob) {
-                            resolve(new File([blob], file.name, { type: 'image/jpeg' }));
-                        }, 'image/jpeg', 0.6);
-                    };
-                    img.src = e.target.result;
-                };
-                reader.readAsDataURL(file);
+                resolve(file);
             });
         }
 

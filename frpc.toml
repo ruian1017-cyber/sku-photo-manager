@@ -1,0 +1,10 @@
+serverAddr = "81.71.19.125"
+serverPort = 7000
+auth.token = "sku-collector-frp-2026"
+
+[[proxies]]
+name = "sku-image-manager"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 8765
+remotePort = 28765
